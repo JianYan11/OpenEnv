@@ -360,6 +360,7 @@ class EnvClient(ABC, Generic[ActT, ObsT, StateT]):
         self._websocket_ping_timeout_s = websocket_ping_timeout_s
         self._provider = provider
         self._provider_stopped = False
+        self._provider_cleanup_pending = False
         self._start_provider_on_connect = base_url is None
         self._child_clients: list[EnvClient[Any, Any, Any]] = []
         self._ws: Optional[ClientConnection] = None
@@ -392,6 +393,10 @@ class EnvClient(ABC, Generic[ActT, ObsT, StateT]):
         self._ws_url = f"{ws_url}/ws"
 
     def _start_provider_if_needed(self) -> None:
+        # A missing URL does not mean the previous resource was released.
+        # Retry its cleanup before start can overwrite the provider's handle.
+        if self._provider_cleanup_pending:
+            self._stop_provider()
         if self._ws_url is not None:
             return
         if self._provider is None:
@@ -447,7 +452,7 @@ class EnvClient(ABC, Generic[ActT, ObsT, StateT]):
 
             return type(self)(**constructor_kwargs)
         except Exception:
-            if starts_provider_here:
+            if starts_provider_here and not self._provider_cleanup_pending:
                 self._stop_provider_best_effort()
             raise
 
@@ -567,7 +572,11 @@ class EnvClient(ABC, Generic[ActT, ObsT, StateT]):
         try:
             self._start_provider_if_needed()
         except Exception:
-            await self.close()
+            # A failed cleanup retry must propagate without attempting stop
+            # again. For a new startup failure, preserve its original error.
+            if not self._provider_cleanup_pending:
+                with suppress(Exception):
+                    await self.close()
             raise
 
         assert self._ws_url is not None
@@ -1082,13 +1091,16 @@ class EnvClient(ABC, Generic[ActT, ObsT, StateT]):
                 return
 
             if hasattr(provider, "stop_container"):
-                provider.stop_container()
+                stop = provider.stop_container
             elif hasattr(provider, "stop"):
-                provider.stop()
+                stop = provider.stop
             else:
                 return
 
+            self._provider_cleanup_pending = True
+            stop()
             # Only a successful stop discharges our cleanup responsibility.
+            self._provider_cleanup_pending = False
             self._provider_stopped = True
         finally:
             if self._start_provider_on_connect:
