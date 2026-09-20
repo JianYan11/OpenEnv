@@ -26,7 +26,7 @@ class ResourceLedger:
         getattr(self.provider, stop_name).side_effect = self.stop
         self.provider.wait_for_ready.side_effect = self.wait_for_ready
 
-    def start(self):
+    def start(self, *args, **kwargs):
         self.allocations += 1
         self.current_resource = self.allocations
         self.live_resources.add(self.current_resource)
@@ -291,6 +291,46 @@ async def test_multiple_failure_recovery_cycles_leave_no_orphaned_resources(
             await invoke(client, execution_mode, "close")
             assert ledger.live_resources == set()
             assert ledger.events.count(("stop", current_resource)) == 1
+    finally:
+        ledger.stop_error = None
+        await invoke(client, execution_mode, "close")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_method", ["connect", "new_session"])
+@pytest.mark.parametrize("cleanup_recovers", [False, True])
+async def test_factory_pending_cleanup_requires_explicit_close(
+    ledger, execution_mode, websocket_connect, retry_method, cleanup_recovers
+):
+    bootstrap = GenericEnvClient.from_env(
+        "audit/test-environment",
+        provider=ledger.provider,
+        use_docker=hasattr(ledger.provider, "start_container"),
+    )
+    client = bootstrap.sync() if execution_mode == "sync" else await bootstrap
+    try:
+        ledger.stop_error = RuntimeError("cleanup temporarily unavailable")
+        with pytest.raises(RuntimeError, match="cleanup temporarily unavailable"):
+            await invoke(client, execution_mode, "close")
+        if cleanup_recovers:
+            ledger.stop_error = None
+        previous_events = list(ledger.events)
+        websocket_connect.reset_mock()
+
+        # A factory URL cannot be reused after an implicit cleanup retry.
+        # Refuse before touching either the provider or the cached endpoint.
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match=r"close\(\)"):
+                await invoke(client, execution_mode, retry_method)
+        assert ledger.events == previous_events
+        assert ledger.live_resources == {1}
+        websocket_connect.assert_not_called()
+
+        ledger.stop_error = None
+        await invoke(client, execution_mode, "close")
+        await invoke(client, execution_mode, "close")
+        assert ledger.events == previous_events + [("stop", 1)]
+        assert not ledger.live_resources
     finally:
         ledger.stop_error = None
         await invoke(client, execution_mode, "close")

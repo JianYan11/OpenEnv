@@ -396,6 +396,12 @@ class EnvClient(ABC, Generic[ActT, ObsT, StateT]):
         # A missing URL does not mean the previous resource was released.
         # Retry its cleanup before start can overwrite the provider's handle.
         if self._provider_cleanup_pending:
+            if not self._start_provider_on_connect:
+                raise RuntimeError(
+                    "Provider cleanup is pending for this client with an existing "
+                    "base URL. Retry close() to finish cleanup, then create a new "
+                    "client instead of reconnecting to the old URL."
+                )
             self._stop_provider()
         if self._ws_url is not None:
             return
