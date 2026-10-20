@@ -41,6 +41,7 @@ jobs:
         run: |
           python scripts/manage_hf_collection.py \
             --skip-versioned-collection \
+            --collection-namespace yuanyan266969 \
             --global-scope tagged \
             --global-collection-title "OpenEnv Environment Hub" \
             --public-global-collection
