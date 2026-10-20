@@ -296,7 +296,7 @@ def discover_openenv_spaces(
         spaces = list(
             list_spaces(
                 search=tag_filter,
-                full=False,
+                expand=["sdk", "tags", "runtime"],
                 sort="trending_score",
                 direction=-1,
             )
@@ -308,7 +308,9 @@ def discover_openenv_spaces(
     discovered: List[str] = []
     for space in spaces:
         try:
-            info = api.space_info(space.id)
+            # Fetch metadata in the paginated list request to avoid one API call
+            # per Space, which exhausts the Hub rate limit on broad searches.
+            info = space
             runtime = getattr(info, "runtime", None)
             runtime_stage = getattr(runtime, "stage", None)
             tags = getattr(info, "tags", []) or []

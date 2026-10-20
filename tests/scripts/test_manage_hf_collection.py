@@ -6,6 +6,7 @@ These tests mock all external API calls to test the logic without making real AP
 
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -125,147 +126,69 @@ class TestGetCollectionSpaces:
 
 
 class TestDiscoverOpenenvSpaces:
-    """Tests for discovering spaces with openenv tag."""
+    """Discovery should filter bulk metadata without per-Space requests."""
 
     @patch("manage_hf_collection.list_spaces")
-    def test_discover_openenv_spaces_success(self, mock_list_spaces):
-        """Test successfully discovering openenv spaces."""
+    def test_discovery_uses_bulk_metadata(self, mock_list_spaces):
         mock_api = Mock()
-
-        # Create mock space objects
-        mock_space1 = Mock()
-        mock_space1.id = "owner1/openenv-space1"
-
-        mock_space2 = Mock()
-        mock_space2.id = "owner2/openenv-space2"
-
-        mock_list_spaces.return_value = [mock_space1, mock_space2]
-
-        # Mock space_info to return proper SpaceInfo objects
-        def mock_space_info(space_id):
-            space_info = Mock()
-            space_info.sdk = "docker"
-            space_info.tags = ["openenv", "environment"]
-            return space_info
-
-        mock_api.space_info.side_effect = mock_space_info
+        mock_list_spaces.return_value = [
+            SimpleNamespace(
+                id="owner/one", sdk="docker", tags=["openenv"], runtime=None
+            ),
+            SimpleNamespace(
+                id="owner/two",
+                sdk="docker",
+                tags=["openenv"],
+                runtime=SimpleNamespace(stage="RUNNING"),
+            ),
+            SimpleNamespace(
+                id="owner/one", sdk="docker", tags=["openenv"], runtime=None
+            ),
+        ]
 
         result = manage_hf_collection.discover_openenv_spaces(mock_api, "openenv")
 
-        assert len(result) == 2
-        assert "owner1/openenv-space1" in result
-        assert "owner2/openenv-space2" in result
-
-        # Verify list_spaces was called with correct parameters
+        assert result == ["owner/one", "owner/two"]
         mock_list_spaces.assert_called_once_with(
-            search="openenv", full=False, sort="trending_score", direction=-1
+            search="openenv",
+            expand=["sdk", "tags", "runtime"],
+            sort="trending_score",
+            direction=-1,
         )
+        mock_api.space_info.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            {"sdk": "gradio", "tags": ["openenv"], "runtime": None},
+            {"sdk": "docker", "tags": ["other"], "runtime": None},
+            {"sdk": "docker", "tags": None, "runtime": None},
+            {
+                "sdk": "docker",
+                "tags": ["openenv"],
+                "runtime": SimpleNamespace(stage="RUNTIME_ERROR"),
+            },
+            {},
+        ],
+    )
+    @patch("manage_hf_collection.list_spaces")
+    def test_discovery_filters_ineligible_spaces(self, mock_list_spaces, metadata):
+        mock_api = Mock()
+        mock_list_spaces.return_value = [SimpleNamespace(id="owner/space", **metadata)]
+
+        assert manage_hf_collection.discover_openenv_spaces(mock_api, "openenv") == []
+        mock_api.space_info.assert_not_called()
 
     @patch("manage_hf_collection.list_spaces")
-    def test_discover_openenv_spaces_filters_non_docker(self, mock_list_spaces):
-        """Test that non-Docker spaces are filtered out."""
-        mock_api = Mock()
-
-        # Create mock space objects
-        mock_space1 = Mock()
-        mock_space1.id = "owner1/openenv-space1"
-
-        mock_space2 = Mock()
-        mock_space2.id = "owner2/openenv-space2"
-
-        mock_list_spaces.return_value = [mock_space1, mock_space2]
-
-        # First space is Docker with openenv tag, second is Gradio
-        def mock_space_info(space_id):
-            space_info = Mock()
-            if space_id == "owner1/openenv-space1":
-                space_info.sdk = "docker"
-                space_info.tags = ["openenv"]
-            else:
-                space_info.sdk = "gradio"
-                space_info.tags = ["openenv"]
-            return space_info
-
-        mock_api.space_info.side_effect = mock_space_info
-
-        result = manage_hf_collection.discover_openenv_spaces(mock_api, "openenv")
-
-        # Only Docker space should be returned
-        assert len(result) == 1
-        assert "owner1/openenv-space1" in result
-        assert "owner2/openenv-space2" not in result
-
-    @patch("manage_hf_collection.list_spaces")
-    def test_discover_openenv_spaces_filters_missing_tag(self, mock_list_spaces):
-        """Test that spaces without openenv tag are filtered out."""
-        mock_api = Mock()
-
-        mock_space = Mock()
-        mock_space.id = "owner1/some-space"
-
-        mock_list_spaces.return_value = [mock_space]
-
-        # Space is Docker but doesn't have openenv tag
-        def mock_space_info(space_id):
-            space_info = Mock()
-            space_info.sdk = "docker"
-            space_info.tags = ["other-tag"]
-            return space_info
-
-        mock_api.space_info.side_effect = mock_space_info
-
-        result = manage_hf_collection.discover_openenv_spaces(mock_api, "openenv")
-
-        assert len(result) == 0
-
-    @patch("manage_hf_collection.list_spaces")
-    def test_discover_openenv_spaces_empty(self, mock_list_spaces):
-        """Test discovering spaces when none exist."""
-        mock_api = Mock()
+    def test_discovery_empty(self, mock_list_spaces):
         mock_list_spaces.return_value = []
-
-        result = manage_hf_collection.discover_openenv_spaces(mock_api, "openenv")
-
-        assert len(result) == 0
-        assert result == []
+        assert manage_hf_collection.discover_openenv_spaces(Mock(), "openenv") == []
 
     @patch("manage_hf_collection.list_spaces")
-    def test_discover_openenv_spaces_handles_space_info_error(self, mock_list_spaces):
-        """Test handling of errors when fetching individual space info."""
-        mock_api = Mock()
-
-        mock_space1 = Mock()
-        mock_space1.id = "owner1/space1"
-        mock_space2 = Mock()
-        mock_space2.id = "owner2/space2"
-
-        mock_list_spaces.return_value = [mock_space1, mock_space2]
-
-        # First space fails, second succeeds
-        def mock_space_info(space_id):
-            if space_id == "owner1/space1":
-                raise Exception("Space not found")
-            space_info = Mock()
-            space_info.sdk = "docker"
-            space_info.tags = ["openenv"]
-            return space_info
-
-        mock_api.space_info.side_effect = mock_space_info
-
-        result = manage_hf_collection.discover_openenv_spaces(mock_api, "openenv")
-
-        # Should continue and return second space
-        assert len(result) == 1
-        assert "owner2/space2" in result
-
-    @patch("manage_hf_collection.list_spaces")
-    def test_discover_openenv_spaces_error(self, mock_list_spaces):
-        """Test handling of errors during space discovery."""
-        mock_api = Mock()
+    def test_discovery_error(self, mock_list_spaces):
         mock_list_spaces.side_effect = Exception("API error")
-
         with pytest.raises(SystemExit) as exc_info:
-            manage_hf_collection.discover_openenv_spaces(mock_api, "openenv")
+            manage_hf_collection.discover_openenv_spaces(Mock(), "openenv")
         assert exc_info.value.code == 1
 
 
