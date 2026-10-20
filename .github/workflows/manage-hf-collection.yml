@@ -33,7 +33,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install "huggingface-hub>=0.24.0"
+          # Keep the SDK compatible with the collection script's legacy API.
+          pip install "huggingface-hub==0.36.0"
 
       - name: Sync global OpenEnv collection
         env:
