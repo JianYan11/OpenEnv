@@ -505,7 +505,8 @@ class TestRenamedToolsAreServed:
         finally:
             env.close()
 
-    async def test_renamed_bridge_preserves_legacy_session_state(self):
+    @pytest.mark.parametrize("rename", [False, True])
+    async def test_bridge_preserves_legacy_session_state(self, rename):
         mcp = FastMCP("domain")
 
         @mcp.tool
@@ -515,17 +516,20 @@ class TestRenamedToolsAreServed:
             return count + 1
 
         adapter = RecordingAdapter()
+        if not rename:
+            adapter.BUILTIN_TOOL_NAMES = frozenset()
+        tool_name = "env_read_file" if rename else "read_file"
         env = HarnessEnvironment(adapter=adapter, mcp=mcp)
         try:
             await env.reset_async()
             async with Client(adapter.bridge_url, mode="legacy") as first:
-                assert (await first.call_tool("env_read_file", {})).data == 1
+                assert (await first.call_tool(tool_name, {})).data == 1
                 async with Client(adapter.bridge_url, mode="legacy") as second:
-                    assert (await second.call_tool("env_read_file", {})).data == 1
-                    assert (await first.call_tool("env_read_file", {})).data == 2
-                    assert (await second.call_tool("env_read_file", {})).data == 2
+                    assert (await second.call_tool(tool_name, {})).data == 1
+                    assert (await first.call_tool(tool_name, {})).data == 2
+                    assert (await second.call_tool(tool_name, {})).data == 2
             async with Client(adapter.bridge_url, mode="legacy") as replacement:
-                assert (await replacement.call_tool("env_read_file", {})).data == 1
+                assert (await replacement.call_tool(tool_name, {})).data == 1
         finally:
             env.close()
 
